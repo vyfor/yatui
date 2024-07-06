@@ -18,6 +18,7 @@ reqwest = { version = "0.12.5", features = ["blocking"] }
 # TUI
 ratatui = "0.27.0"
 crossterm = { version = "0.27.0" }
+ratatui-image = { version = "1.0.2", features = ["crossterm"] }
 
 # Audio
 rodio = { git = "https://github.com/vyfor/rodio.git", rev = "6664a7b", features = [
@@ -43,3 +44,4 @@ anyhow = "1.0.86"
 dotenv = "0.15.0"
 lazy_static = "1.5.0"
 flume = { version = "0.11.0" }
+image = "0.25.1"

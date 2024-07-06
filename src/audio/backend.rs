@@ -1,7 +1,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     thread,
     time::Duration,
@@ -13,6 +13,12 @@ use crate::{
     stream::streamer::AudioStreamer,
 };
 use flume::{Receiver, Sender};
+// use ratatui::layout::Rect;
+use ratatui_image::{
+    picker::Picker,
+    protocol::StatefulProtocol,
+    // Resize,
+};
 use rodio::{cpal::StreamConfig, Decoder, OutputStream, Sink, Source};
 use tracing::info;
 use yandex_music::{model::track_model::track::Track, YandexMusicClient};
@@ -24,7 +30,7 @@ pub struct AudioPlayer {
     stream: OutputStream,
     sink: Arc<Sink>,
     stream_config: StreamConfig,
-    client: Arc<YandexMusicClient>,
+    pub client: Arc<YandexMusicClient>,
     event_tx: Sender<GlobalEvent>,
     tx_audio: Sender<(f32, i64)>,
     rx_audio: Receiver<(f32, i64)>,
@@ -35,12 +41,13 @@ pub struct AudioPlayer {
     player_tx: Sender<PlayerCommand>,
     player_rx: Receiver<PlayerCommand>,
 
-    pub track: Option<Track>,
+    pub track: Arc<Option<Track>>,
     pub tracks: Vec<Track>,
     pub track_index: usize,
     pub volume: u8,
 
     pub track_progress: Arc<TrackProgress>,
+    pub track_image: Arc<RwLock<Option<Box<dyn StatefulProtocol>>>>,
     pub playing: Arc<AtomicBool>,
 }
 
@@ -72,12 +79,13 @@ impl AudioPlayer {
             player_tx,
             player_rx,
 
-            track: None,
+            track: Arc::default(),
             tracks: Vec::new(),
             track_index: 0,
             volume: 100,
 
             track_progress: Arc::new(TrackProgress::default()),
+            track_image: Arc::new(RwLock::new(None)),
             playing: Arc::new(AtomicBool::new(false)),
         };
 
@@ -108,7 +116,7 @@ impl AudioPlayer {
         if self.track_index != 0 {
             self.track_index -= 1;
         }
-        self.track = Some(self.tracks[self.track_index].clone());
+        self.track = Arc::new(Some(self.tracks[self.track_index].clone()));
     }
 
     pub fn next_track(&mut self) {
@@ -117,17 +125,19 @@ impl AudioPlayer {
         } else {
             0
         };
-        self.track = Some(self.tracks[self.track_index].clone());
+        self.track = Arc::new(Some(self.tracks[self.track_index].clone()));
     }
 
     pub async fn play_previous(&mut self) {
         self.previous_track();
-        self.play_track(self.track.as_ref().unwrap().id).await
+        self.play_track(self.track.as_ref().as_ref().unwrap().id)
+            .await
     }
 
     pub async fn play_next(&mut self) {
         self.next_track();
-        self.play_track(self.track.as_ref().unwrap().id).await
+        self.play_track(self.track.as_ref().as_ref().unwrap().id)
+            .await
     }
 
     pub async fn play_track(&mut self, track_id: i32) {
@@ -137,6 +147,8 @@ impl AudioPlayer {
         let sink = self.sink.clone();
         let track_progress = self.track_progress.clone();
         let playing = self.playing.clone();
+        let track = self.track.clone();
+        let track_image = self.track_image.clone();
         tokio::spawn(async move {
             let (url, codec, bitrate) =
                 fetch_track_url(&client, track_id).await;
@@ -160,6 +172,10 @@ impl AudioPlayer {
             }
             sink.append(decoder);
             playing.store(true, Ordering::Relaxed);
+            info!("fetching image");
+            *track_image.write().unwrap() =
+                YandexMusicClient::fetch_image(client.as_ref(), track.as_ref())
+                    .await;
         });
     }
 
@@ -192,20 +208,27 @@ impl AudioPlayer {
     }
 
     pub fn seek_backwards(&mut self, seconds: u64) {
-        self.sink
-            .try_seek(self.sink.get_pos() - Duration::from_secs(seconds))
-            .unwrap();
+        let _ = self.sink.try_seek(
+            self.sink
+                .get_pos()
+                .saturating_sub(Duration::from_secs(seconds)),
+        );
     }
 
     pub fn seek_forwards(&mut self, seconds: u64) {
-        self.sink
-            .try_seek(self.sink.get_pos() + Duration::from_secs(seconds))
-            .unwrap();
+        let _ = self
+            .sink
+            .try_seek(self.sink.get_pos() + Duration::from_secs(seconds));
     }
 }
 
 trait Player {
     async fn fetch_tracks(player: &mut AudioPlayer);
+
+    async fn fetch_image(
+        client: &Self,
+        track: &Option<Track>,
+    ) -> Option<Box<dyn StatefulProtocol>>;
 }
 
 impl Player for YandexMusicClient {
@@ -217,5 +240,47 @@ impl Player for YandexMusicClient {
         let tracks = player.client.get_tracks(&track_ids, true).await.unwrap();
 
         player.tracks = tracks;
+    }
+
+    async fn fetch_image(
+        client: &Self,
+        track: &Option<Track>,
+    ) -> Option<Box<dyn StatefulProtocol>> {
+        let mut image_data = None;
+        if let Some(url) =
+            track.as_ref().as_ref().and_then(|t| t.cover_uri.as_deref())
+        {
+            let image = client
+                .client
+                .get(format!("https://{}", url.replace("%%", "200x200")))
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            image_data = Some(
+                image::load_from_memory_with_format(
+                    &image,
+                    image::ImageFormat::Jpeg,
+                )
+                .unwrap(),
+            );
+        }
+
+        let mut protocol = None;
+        if let Some(image) = image_data {
+            let mut picker = Picker::new((8, 12));
+
+            picker.guess_protocol();
+            protocol = Some(picker.new_resize_protocol(
+                image,
+                // Rect::new(10, 10, 18, 18),
+                // Resize::Crop(None),
+            ));
+            // .ok();
+        }
+
+        protocol
     }
 }

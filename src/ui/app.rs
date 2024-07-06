@@ -1,9 +1,8 @@
 use flume::{Receiver, Sender};
 
 use ratatui::{
-    buffer::Buffer,
     crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     widgets::{block::Title, Block, Widget},
     Frame,
@@ -92,6 +91,7 @@ impl App {
                 KeyCode::Char('=') => self.player.set_volume(100),
                 KeyCode::Left => self.player.seek_backwards(10),
                 KeyCode::Right => self.player.seek_forwards(10),
+                KeyCode::Char(' ') => self.player.play_pause(),
                 _ => {}
             },
             _ => {}
@@ -116,21 +116,18 @@ impl App {
 
     fn ui(&self, frame: &mut Frame) {
         if self.has_focus {
-            frame.render_widget(self, frame.size());
+            self.render(frame);
         }
     }
-}
 
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer)
-    where
-        Self: Sized,
-    {
+    fn render(&self, frame: &mut Frame) {
+        let area = frame.size();
+        let buf = frame.buffer_mut();
         buf.set_style(area, Style::new().bg(Color::from_u32(0x00181818)));
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(8)])
+            .constraints([Constraint::Min(1), Constraint::Length(12)])
             .split(area);
 
         let mut title =
@@ -147,7 +144,13 @@ impl Widget for &App {
         }
         Block::bordered().title(title).render(chunks[0], buf);
 
-        let progress_widget = ProgressWidget::new(&self.player.track_progress);
-        progress_widget.render(chunks[1], buf);
+        let mut lock = self.player.track_image.write().unwrap();
+        let mut protocol = lock.as_mut();
+        ProgressWidget::render(
+            chunks[1],
+            frame,
+            &self.player.track_progress,
+            &mut protocol,
+        );
     }
 }
